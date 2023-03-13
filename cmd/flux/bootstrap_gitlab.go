@@ -24,13 +24,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/fluxcd/pkg/git"
+	"github.com/fluxcd/pkg/git/gogit"
 	"github.com/spf13/cobra"
 
 	"github.com/fluxcd/flux2/internal/flags"
 	"github.com/fluxcd/flux2/internal/utils"
 	"github.com/fluxcd/flux2/pkg/bootstrap"
-	"github.com/fluxcd/flux2/pkg/bootstrap/git/gogit"
 	"github.com/fluxcd/flux2/pkg/bootstrap/provider"
 	"github.com/fluxcd/flux2/pkg/manifestgen"
 	"github.com/fluxcd/flux2/pkg/manifestgen/install"
@@ -40,11 +40,11 @@ import (
 
 var bootstrapGitLabCmd = &cobra.Command{
 	Use:   "gitlab",
-	Short: "Bootstrap toolkit components in a GitLab repository",
+	Short: "Deploy Flux on a cluster connected to a GitLab repository",
 	Long: `The bootstrap gitlab command creates the GitLab repository if it doesn't exists and
-commits the toolkit components manifests to the master branch.
-Then it configures the target cluster to synchronize with the repository.
-If the toolkit components are present on the cluster,
+commits the Flux manifests to the specified branch.
+Then it configures the target cluster to synchronize with that repository.
+If the Flux components are present on the cluster,
 the bootstrap command will perform an upgrade if needed.`,
 	Example: `  # Create a GitLab API token and export it as an env var
   export GITLAB_TOKEN=<my-token>
@@ -136,7 +136,9 @@ func bootstrapGitLabCmdRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Manifest base
-	if ver, err := getVersion(bootstrapArgs.version); err == nil {
+	if ver, err := getVersion(bootstrapArgs.version); err != nil {
+		return err
+	} else {
 		bootstrapArgs.version = ver
 	}
 	manifestsBase, err := buildEmbeddedManifestBase()
@@ -178,10 +180,17 @@ func bootstrapGitLabCmdRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create temporary working dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
-	gitClient := gogit.New(tmpDir, &http.BasicAuth{
-		Username: gitlabArgs.owner,
-		Password: glToken,
-	})
+
+	clientOpts := []gogit.ClientOption{gogit.WithDiskStorage(), gogit.WithFallbackToDefaultKnownHosts()}
+	gitClient, err := gogit.NewClient(tmpDir, &git.AuthOptions{
+		Transport: git.HTTPS,
+		Username:  gitlabArgs.owner,
+		Password:  glToken,
+		CAFile:    caBundle,
+	}, clientOpts...)
+	if err != nil {
+		return fmt.Errorf("failed to create a Git client: %w", err)
+	}
 
 	// Install manifest config
 	installOptions := install.Options{
@@ -215,19 +224,18 @@ func bootstrapGitLabCmdRun(cmd *cobra.Command, args []string) error {
 	if bootstrapArgs.tokenAuth {
 		secretOpts.Username = "git"
 		secretOpts.Password = glToken
-
-		if bootstrapArgs.caFile != "" {
-			secretOpts.CAFilePath = bootstrapArgs.caFile
-		}
+		secretOpts.CAFile = caBundle
 	} else {
+		keypair, err := sourcesecret.LoadKeyPairFromPath(bootstrapArgs.privateKeyFile, gitArgs.password)
+		if err != nil {
+			return err
+		}
+		secretOpts.Keypair = keypair
 		secretOpts.PrivateKeyAlgorithm = sourcesecret.PrivateKeyAlgorithm(bootstrapArgs.keyAlgorithm)
 		secretOpts.RSAKeyBits = int(bootstrapArgs.keyRSABits)
 		secretOpts.ECDSACurve = bootstrapArgs.keyECDSACurve.Curve
-		secretOpts.SSHHostname = gitlabArgs.hostname
 
-		if bootstrapArgs.privateKeyFile != "" {
-			secretOpts.PrivateKeyPath = bootstrapArgs.privateKeyFile
-		}
+		secretOpts.SSHHostname = gitlabArgs.hostname
 		if bootstrapArgs.sshHostname != "" {
 			secretOpts.SSHHostname = bootstrapArgs.sshHostname
 		}
@@ -242,8 +250,12 @@ func bootstrapGitLabCmdRun(cmd *cobra.Command, args []string) error {
 		Secret:            bootstrapArgs.secretName,
 		TargetPath:        gitlabArgs.path.ToSlash(),
 		ManifestFile:      sync.MakeDefaultOptions().ManifestFile,
-		GitImplementation: sourceGitArgs.gitImplementation.String(),
 		RecurseSubmodules: bootstrapArgs.recurseSubmodules,
+	}
+
+	entityList, err := bootstrap.LoadEntityListFromPath(bootstrapArgs.gpgKeyRingPath)
+	if err != nil {
+		return err
 	}
 
 	// Bootstrap config
@@ -251,14 +263,13 @@ func bootstrapGitLabCmdRun(cmd *cobra.Command, args []string) error {
 		bootstrap.WithProviderRepository(gitlabArgs.owner, gitlabArgs.repository, gitlabArgs.personal),
 		bootstrap.WithBranch(bootstrapArgs.branch),
 		bootstrap.WithBootstrapTransportType("https"),
-		bootstrap.WithAuthor(bootstrapArgs.authorName, bootstrapArgs.authorEmail),
+		bootstrap.WithSignature(bootstrapArgs.authorName, bootstrapArgs.authorEmail),
 		bootstrap.WithCommitMessageAppendix(bootstrapArgs.commitMessageAppendix),
 		bootstrap.WithProviderTeamPermissions(mapTeamSlice(gitlabArgs.teams, glDefaultPermission)),
 		bootstrap.WithReadWriteKeyPermissions(gitlabArgs.readWriteKey),
 		bootstrap.WithKubeconfig(kubeconfigArgs, kubeclientOptions),
 		bootstrap.WithLogger(logger),
-		bootstrap.WithCABundle(caBundle),
-		bootstrap.WithGitCommitSigning(bootstrapArgs.gpgKeyRingPath, bootstrapArgs.gpgPassphrase, bootstrapArgs.gpgKeyID),
+		bootstrap.WithGitCommitSigning(entityList, bootstrapArgs.gpgPassphrase, bootstrapArgs.gpgKeyID),
 	}
 	if bootstrapArgs.sshHostname != "" {
 		bootstrapOpts = append(bootstrapOpts, bootstrap.WithSSHHostname(bootstrapArgs.sshHostname))

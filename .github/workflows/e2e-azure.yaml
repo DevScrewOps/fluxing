@@ -15,23 +15,18 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c # v3.3.0
       - name: Restore Go cache
-        uses: actions/cache@v3
+        uses: actions/cache@940f3d7cf195ba83374c77632d1e2cbb2f24ae68 # v3.3.0
         with:
           path: ~/go/pkg/mod
-          key: ${{ runner.os }}-go1.18-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go1.20-${{ hashFiles('**/go.sum') }}
           restore-keys: |
-            ${{ runner.os }}-go1.18-
+            ${{ runner.os }}-go1.20-
       - name: Setup Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568 # v3.5.0
         with:
-          go-version: 1.19.x
-      - name: Install libgit2
-        run: |
-          echo "deb http://archive.ubuntu.com/ubuntu/ kinetic universe" | sudo tee -a /etc/apt/sources.list
-          sudo apt-get update
-          sudo apt-get install -y -t kinetic libgit2-dev=1.3.0+dfsg.1-3ubuntu1
+          go-version: 1.20.x
       - name: Setup Flux CLI
         run: |
           make build
@@ -44,7 +39,7 @@ jobs:
           mkdir -p $HOME/.local/bin
           mv sops-v3.7.1.linux $HOME/.local/bin/sops
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v2.0.2
+        uses: hashicorp/setup-terraform@633666f66e0061ca3b725c73b2ec20cd13a8fdd1  # v2
         with:
           terraform_version: 1.2.8
           terraform_wrapper: false

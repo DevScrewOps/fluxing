@@ -55,7 +55,6 @@ type sourceGitFlags struct {
 	keyRSABits        flags.RSAKeyBits
 	keyECDSACurve     flags.ECDSACurve
 	secretRef         string
-	gitImplementation flags.GitImplementation
 	caFile            string
 	privateKeyFile    string
 	recurseSubmodules bool
@@ -136,7 +135,6 @@ func init() {
 	createSourceGitCmd.Flags().Var(&sourceGitArgs.keyRSABits, "ssh-rsa-bits", sourceGitArgs.keyRSABits.Description())
 	createSourceGitCmd.Flags().Var(&sourceGitArgs.keyECDSACurve, "ssh-ecdsa-curve", sourceGitArgs.keyECDSACurve.Description())
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.secretRef, "secret-ref", "", "the name of an existing secret containing SSH or basic credentials")
-	createSourceGitCmd.Flags().Var(&sourceGitArgs.gitImplementation, "git-implementation", sourceGitArgs.gitImplementation.Description())
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.caFile, "ca-file", "", "path to TLS CA file used for validating self-signed certificates")
 	createSourceGitCmd.Flags().StringVar(&sourceGitArgs.privateKeyFile, "private-key-file", "", "path to a passwordless private key file used for authenticating to the Git SSH server")
 	createSourceGitCmd.Flags().BoolVar(&sourceGitArgs.recurseSubmodules, "recurse-submodules", false,
@@ -178,10 +176,6 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("specifying a CA file is not supported for Git over SSH")
 	}
 
-	if sourceGitArgs.recurseSubmodules && sourceGitArgs.gitImplementation == sourcev1.LibGit2Implementation {
-		return fmt.Errorf("recurse submodules requires --git-implementation=%s", sourcev1.GoGitImplementation)
-	}
-
 	tmpDir, err := os.MkdirTemp("", name)
 	if err != nil {
 		return err
@@ -220,10 +214,6 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 		gitRepository.Spec.Timeout = &metav1.Duration{Duration: createSourceArgs.fetchTimeout}
 	}
 
-	if sourceGitArgs.gitImplementation != "" {
-		gitRepository.Spec.GitImplementation = sourceGitArgs.gitImplementation.String()
-	}
-
 	if sourceGitArgs.semver != "" {
 		gitRepository.Spec.Reference.SemVer = sourceGitArgs.semver
 	} else if sourceGitArgs.tag != "" {
@@ -259,16 +249,26 @@ func createSourceGitCmdRun(cmd *cobra.Command, args []string) error {
 		}
 		switch u.Scheme {
 		case "ssh":
+			keypair, err := sourcesecret.LoadKeyPairFromPath(sourceGitArgs.privateKeyFile, sourceGitArgs.password)
+			if err != nil {
+				return err
+			}
+			secretOpts.Keypair = keypair
 			secretOpts.SSHHostname = u.Host
-			secretOpts.PrivateKeyPath = sourceGitArgs.privateKeyFile
 			secretOpts.PrivateKeyAlgorithm = sourcesecret.PrivateKeyAlgorithm(sourceGitArgs.keyAlgorithm)
 			secretOpts.RSAKeyBits = int(sourceGitArgs.keyRSABits)
 			secretOpts.ECDSACurve = sourceGitArgs.keyECDSACurve.Curve
 			secretOpts.Password = sourceGitArgs.password
 		case "https":
+			if sourceGitArgs.caFile != "" {
+				caBundle, err := os.ReadFile(sourceGitArgs.caFile)
+				if err != nil {
+					return fmt.Errorf("unable to read TLS CA file: %w", err)
+				}
+				secretOpts.CAFile = caBundle
+			}
 			secretOpts.Username = sourceGitArgs.username
 			secretOpts.Password = sourceGitArgs.password
-			secretOpts.CAFilePath = sourceGitArgs.caFile
 		case "http":
 			logger.Warningf("insecure configuration: credentials configured for an HTTP URL")
 			secretOpts.Username = sourceGitArgs.username

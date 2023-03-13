@@ -17,11 +17,15 @@ limitations under the License.
 package bootstrap
 
 import (
+	"fmt"
+	"os"
+
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
+	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/fluxcd/pkg/git"
 	runclient "github.com/fluxcd/pkg/runtime/client"
 
-	"github.com/fluxcd/flux2/pkg/bootstrap/git"
 	"github.com/fluxcd/flux2/pkg/log"
 )
 
@@ -44,40 +48,26 @@ func (o branchOption) applyGitProvider(b *GitProviderBootstrapper) {
 	o.applyGit(b.PlainGitBootstrapper)
 }
 
-func WithAuthor(name, email string) Option {
-	return authorOption{
+func WithSignature(name, email string) Option {
+	return signatureOption{
 		Name:  name,
 		Email: email,
 	}
 }
 
-type authorOption git.Author
+type signatureOption git.Signature
 
-func (o authorOption) applyGit(b *PlainGitBootstrapper) {
+func (o signatureOption) applyGit(b *PlainGitBootstrapper) {
 	if o.Name != "" {
-		b.author.Name = o.Name
+		b.signature.Name = o.Name
 	}
 	if o.Email != "" {
-		b.author.Email = o.Email
+		b.signature.Email = o.Email
 	}
 }
 
-func (o authorOption) applyGitProvider(b *GitProviderBootstrapper) {
+func (o signatureOption) applyGitProvider(b *GitProviderBootstrapper) {
 	o.applyGit(b.PlainGitBootstrapper)
-}
-
-func WithCABundle(b []byte) Option {
-	return caBundleOption(b)
-}
-
-type caBundleOption []byte
-
-func (o caBundleOption) applyGit(b *PlainGitBootstrapper) {
-	b.caBundle = o
-}
-
-func (o caBundleOption) applyGitProvider(b *GitProviderBootstrapper) {
-	b.caBundle = o
 }
 
 func WithCommitMessageAppendix(appendix string) Option {
@@ -131,26 +121,41 @@ func (o loggerOption) applyGitProvider(b *GitProviderBootstrapper) {
 	b.logger = o.logger
 }
 
-func WithGitCommitSigning(path, passphrase, keyID string) Option {
+func WithGitCommitSigning(gpgKeyRing openpgp.EntityList, passphrase, keyID string) Option {
 	return gitCommitSigningOption{
-		gpgKeyRingPath: path,
-		gpgPassphrase:  passphrase,
-		gpgKeyID:       keyID,
+		gpgKeyRing:    gpgKeyRing,
+		gpgPassphrase: passphrase,
+		gpgKeyID:      keyID,
 	}
 }
 
 type gitCommitSigningOption struct {
-	gpgKeyRingPath string
-	gpgPassphrase  string
-	gpgKeyID       string
+	gpgKeyRing    openpgp.EntityList
+	gpgPassphrase string
+	gpgKeyID      string
 }
 
 func (o gitCommitSigningOption) applyGit(b *PlainGitBootstrapper) {
-	b.gpgKeyRingPath = o.gpgKeyRingPath
+	b.gpgKeyRing = o.gpgKeyRing
 	b.gpgPassphrase = o.gpgPassphrase
 	b.gpgKeyID = o.gpgKeyID
 }
 
 func (o gitCommitSigningOption) applyGitProvider(b *GitProviderBootstrapper) {
 	o.applyGit(b.PlainGitBootstrapper)
+}
+
+func LoadEntityListFromPath(path string) (openpgp.EntityList, error) {
+	if path == "" {
+		return nil, nil
+	}
+	r, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("unable to open GPG key ring: %w", err)
+	}
+	entityList, err := openpgp.ReadKeyRing(r)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read GPG key ring: %w", err)
+	}
+	return entityList, nil
 }
